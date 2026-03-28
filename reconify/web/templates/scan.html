@@ -43,7 +43,7 @@
 
   <!-- Module status cards -->
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-    {% set module_labels = {'sub': 'Subdomains', 'js': 'JS Recon', 'ports': 'Ports', 'content': 'Content', 'ai': 'AI Analysis'} %}
+    {% set module_labels = {'sub': 'Subdomains', 'js': 'JS Recon', 'ports': 'Ports', 'content': 'Content', 'params': 'Parameters', 'xss': 'XSS', 'ssrf': 'SSRF', 'ai': 'AI Analysis'} %}
     {% for mod_name, run in module_runs.items() %}
     <div class="bg-gray-900 border rounded-lg p-4 transition-all"
          :class="moduleCardClass('{{ mod_name }}')"
@@ -105,10 +105,13 @@
   {% endif %}
 
   <!-- Tabs -->
-  <div class="border-b border-gray-800 mb-4 flex gap-0">
+  <div class="border-b border-gray-800 mb-4 flex gap-0 flex-wrap">
     {% for tab, label, count in [
       ('subdomains', 'Subdomains', subdomains|length),
       ('js', 'JS Findings', js_findings|length),
+      ('xss', 'XSS', xss_findings|length),
+      ('ssrf', 'SSRF', ssrf_findings|length),
+      ('params', 'Parameters', parameters|length),
       ('ports', 'Ports', ports|length),
       ('urls', 'URLs', urls|length),
     ] %}
@@ -194,6 +197,137 @@
     </div>
   </div>
 
+  <!-- XSS Findings -->
+  <div x-show="tab === 'xss'" x-cloak>
+    <div class="flex gap-2 mb-3">
+      <select x-model="xssType" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none">
+        <option value="">All types</option>
+        <option value="reflected">Reflected</option>
+        <option value="dom">DOM</option>
+        <option value="blind">Blind</option>
+        <option value="csti">CSTI</option>
+        <option value="header">Header</option>
+      </select>
+      <label class="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
+        <input type="checkbox" x-model="confirmedOnly" class="accent-cyan-400" />
+        Confirmed only
+      </label>
+    </div>
+    {% if xss_findings %}
+    <div class="space-y-2">
+      {% for x in xss_findings %}
+      <div class="rounded-lg border p-3 {% if x.confirmed %}border-red-700 bg-red-950/20{% else %}border-gray-700 bg-gray-900{% endif %}"
+           x-show="(!xssType || '{{ x.finding_type }}' === xssType) && (!confirmedOnly || {{ 'true' if x.confirmed else 'false' }})">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          {% if x.confirmed %}
+            <span class="text-xs bg-red-700 text-white px-2 py-0.5 rounded font-bold">✓ CONFIRMED</span>
+          {% else %}
+            <span class="text-xs bg-yellow-900 text-yellow-300 px-2 py-0.5 rounded">potential</span>
+          {% endif %}
+          <span class="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">{{ x.finding_type }}</span>
+          <span class="text-xs text-gray-500">{{ x.tool }}</span>
+        </div>
+        {% if x.url %}<div class="text-xs text-cyan-400 font-mono truncate mb-1">{{ x.url[:120] }}</div>{% endif %}
+        {% if x.param %}<div class="text-xs text-gray-400">Param: <code class="text-yellow-300">{{ x.param }}</code></div>{% endif %}
+        {% if x.payload %}<div class="text-xs text-gray-400 mt-1">Payload: <code class="text-orange-300 break-all">{{ x.payload[:200] }}</code></div>{% endif %}
+        {% if x.evidence %}<div class="text-xs text-gray-500 mt-1 bg-gray-800 rounded p-2 font-mono break-all">{{ x.evidence[:300] }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-gray-600 text-center py-12">No XSS findings yet. Run the <code>xss</code> module.</div>
+    {% endif %}
+  </div>
+
+  <!-- SSRF Findings -->
+  <div x-show="tab === 'ssrf'" x-cloak>
+    <div class="flex gap-2 mb-3">
+      <select x-model="ssrfType" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none">
+        <option value="">All types</option>
+        <option value="blind">Blind</option>
+        <option value="metadata">Cloud Metadata</option>
+        <option value="internal_port">Internal Port</option>
+        <option value="open_redirect_chain">Open Redirect Chain</option>
+      </select>
+    </div>
+    {% if ssrf_findings %}
+    <div class="space-y-2">
+      {% for x in ssrf_findings %}
+      <div class="rounded-lg border p-3 {% if x.confirmed %}border-red-700 bg-red-950/20{% else %}border-gray-700 bg-gray-900{% endif %}"
+           x-show="!ssrfType || '{{ x.finding_type }}' === ssrfType">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          {% if x.confirmed %}
+            <span class="text-xs bg-red-700 text-white px-2 py-0.5 rounded font-bold">✓ CONFIRMED</span>
+          {% else %}
+            <span class="text-xs bg-yellow-900 text-yellow-300 px-2 py-0.5 rounded">potential</span>
+          {% endif %}
+          <span class="text-xs bg-purple-900 text-purple-300 px-2 py-0.5 rounded">{{ x.finding_type }}</span>
+        </div>
+        {% if x.url %}<div class="text-xs text-cyan-400 font-mono truncate mb-1">{{ x.url[:120] }}</div>{% endif %}
+        {% if x.param %}<div class="text-xs text-gray-400">Param: <code class="text-yellow-300">{{ x.param }}</code></div>{% endif %}
+        {% if x.payload %}<div class="text-xs text-gray-400 mt-1">Payload: <code class="text-orange-300 break-all">{{ x.payload[:200] }}</code></div>{% endif %}
+        {% if x.metadata_path %}<div class="text-xs text-red-400 mt-1 font-mono">{{ x.metadata_path[:200] }}</div>{% endif %}
+        {% if x.callback_id %}<div class="text-xs text-blue-400 mt-1">Callback: <code>{{ x.callback_id[:100] }}</code></div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-gray-600 text-center py-12">No SSRF findings yet. Run the <code>ssrf</code> module.</div>
+    {% endif %}
+  </div>
+
+  <!-- Parameters -->
+  <div x-show="tab === 'params'" x-cloak>
+    <div class="flex gap-2 mb-3 flex-wrap">
+      <input x-model="paramFilter" placeholder="Filter params…"
+             class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white w-48 focus:outline-none focus:border-cyan-500" />
+      <select x-model="paramType" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none">
+        <option value="">All types</option>
+        <option value="xss">XSS prone</option>
+        <option value="ssrf">SSRF prone</option>
+        <option value="redirect">Redirect</option>
+        <option value="generic">Generic</option>
+      </select>
+    </div>
+    {% if parameters %}
+    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+          <tr>
+            <th class="px-4 py-2 text-left">Param</th>
+            <th class="px-4 py-2 text-left">Type</th>
+            <th class="px-4 py-2 text-left">Source</th>
+            <th class="px-4 py-2 text-left">URL</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          {% for p in parameters %}
+          <tr class="hover:bg-gray-800/40"
+              x-show="(!paramFilter || '{{ p.param }}'.includes(paramFilter)) && (!paramType || '{{ p.param_type }}' === paramType)">
+            <td class="px-4 py-2 font-mono font-bold
+              {% if p.param_type == 'ssrf' %}text-red-400
+              {% elif p.param_type == 'xss' %}text-yellow-400
+              {% elif p.param_type == 'redirect' %}text-purple-400
+              {% else %}text-gray-300{% endif %}">{{ p.param }}</td>
+            <td class="px-4 py-2 text-xs">
+              <span class="px-1.5 py-0.5 rounded
+                {% if p.param_type == 'ssrf' %}bg-red-900 text-red-300
+                {% elif p.param_type == 'xss' %}bg-yellow-900 text-yellow-300
+                {% elif p.param_type == 'redirect' %}bg-purple-900 text-purple-300
+                {% else %}bg-gray-700 text-gray-400{% endif %}">{{ p.param_type }}</span>
+            </td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ p.source }}</td>
+            <td class="px-4 py-2 text-cyan-400 text-xs font-mono truncate max-w-md">{{ p.url[:100] }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-gray-600 text-center py-12">No parameters yet. Run the <code>params</code> module first.</div>
+    {% endif %}
+  </div>
+
   <!-- Ports -->
   <div x-show="tab === 'ports'" x-cloak>
     <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
@@ -273,6 +407,9 @@ function scanPage(scanId) {
     tab: 'subdomains',
     subFilter: '', liveOnly: false,
     jsType: '', urlFilter: '', urlSource: '',
+    xssType: '', confirmedOnly: false,
+    ssrfType: '',
+    paramFilter: '', paramType: '',
     moduleCounts: {},   // live state: { [module]: {status, count, elapsed, last} }
     moduleRunning: {},  // which modules we triggered from the UI
     _es: null,
@@ -306,6 +443,9 @@ function scanPage(scanId) {
       if (ev.type === 'js_finding')      { c.count++; c.last = (ev.secret_type || ev.finding_type) + ': ' + (ev.value || '').slice(0,40); }
       if (ev.type === 'port')            { c.count++; c.last = `${ev.host}:${ev.port}`; }
       if (ev.type === 'url')             { c.count++; c.last = (ev.url || '').slice(0,60); }
+      if (ev.type === 'parameter')       { c.count++; c.last = `[${ev.param_type}] ${ev.param}`; }
+      if (ev.type === 'xss_finding')     { c.count++; c.last = (ev.confirmed ? '✓ ' : '') + ev.finding_type + ' ' + ev.param; }
+      if (ev.type === 'ssrf_finding')    { c.count++; c.last = (ev.confirmed ? '✓ ' : '') + ev.finding_type + ' ' + ev.param; }
 
       if (ev.type === 'scan_done' || ev.type === 'done') {
         if (this._es) { this._es.close(); this._es = null; }

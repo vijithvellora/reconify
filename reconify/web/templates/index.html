@@ -214,7 +214,7 @@ function dashboard() {
         card.count = ev.count; card.elapsed = ev.elapsed;
       } else if (t === 'module_skip' && card) {
         card.status = 'skipped';
-      } else if ((t === 'subdomain' || t === 'js_finding' || t === 'port' || t === 'url') && card) {
+      } else if ((t === 'subdomain' || t === 'js_finding' || t === 'port' || t === 'url' || t === 'parameter' || t === 'xss_finding' || t === 'ssrf_finding') && card) {
         card.count++;
         card.last = this.previewFinding(ev);
       } else if (t === 'scan_done' || t === 'done') {
@@ -233,6 +233,9 @@ function dashboard() {
       if (ev.type === 'js_finding') return (ev.secret_type || ev.finding_type) + ': ' + (ev.value || '').slice(0, 40);
       if (ev.type === 'port') return `${ev.host}:${ev.port}/${ev.protocol}`;
       if (ev.type === 'url') return (ev.url || '').slice(0, 60);
+      if (ev.type === 'parameter') return `[${ev.param_type}] ${ev.param}`;
+      if (ev.type === 'xss_finding') return `${ev.confirmed ? '✓ ' : ''}XSS ${ev.finding_type} ${ev.param}`;
+      if (ev.type === 'ssrf_finding') return `${ev.confirmed ? '✓ ' : ''}SSRF ${ev.finding_type} ${ev.param}`;
       return '';
     },
 

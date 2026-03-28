@@ -22,16 +22,16 @@ app = typer.Typer(
 )
 console = Console()
 
-VALID_MODULES = ["sub", "js", "ports", "content"]
+VALID_MODULES = ["sub", "js", "ports", "content", "params", "xss", "ssrf"]
 
 
 @app.command()
 def scan(
     target: str = typer.Argument(..., help="Target domain (e.g. example.com)"),
     modules: str = typer.Option(
-        "sub,js,ports,content",
+        "sub,js,ports,content,params,xss,ssrf",
         "--modules", "-m",
-        help="Comma-separated modules to run: sub,js,ports,content",
+        help="Comma-separated modules: sub,js,ports,content,params,xss,ssrf",
     ),
     threads: int = typer.Option(20, "--threads", "-t", help="Concurrent request threads"),
     output: str = typer.Option("table", "--output", "-o", help="Output format: table|json"),
@@ -184,6 +184,19 @@ def _print_event(event: dict):
         console.print(f"  [yellow]PORT[/yellow] {event['host']}:{event['port']}/{event.get('protocol','tcp')}{svc}")
     elif t == "url":
         console.print(f"  [dim]URL[/dim] {event['url'][:120]}")
+    elif t == "parameter":
+        ptype = event.get("param_type", "")
+        color = {"xss": "yellow", "ssrf": "red", "redirect": "magenta"}.get(ptype, "dim")
+        console.print(f"  [{color}]PARAM[/{color}] [{ptype}] {event['param']} @ {event['url'][:80]}")
+    elif t == "xss_finding":
+        confirmed = "[bold red]✓ CONFIRMED[/bold red]" if event.get("confirmed") else "[yellow]potential[/yellow]"
+        ftype = event.get("finding_type", "")
+        console.print(f"  [bold red]XSS[/bold red] {confirmed} [{ftype}] param={event.get('param','')} — {event.get('evidence','')[:80]}")
+    elif t == "ssrf_finding":
+        confirmed = "[bold red]✓ CONFIRMED[/bold red]" if event.get("confirmed") else "[yellow]potential[/yellow]"
+        ftype = event.get("finding_type", "")
+        meta = event.get("metadata_path") or event.get("callback_id") or ""
+        console.print(f"  [bold magenta]SSRF[/bold magenta] {confirmed} [{ftype}] param={event.get('param','')} — {meta[:80]}")
     elif t == "ai_report":
         console.print(f"\n[bold magenta]AI Report ready: {event['module']}[/bold magenta]")
     elif t == "scan_error":
@@ -201,6 +214,11 @@ def _print_summary_tables(data: dict):
         "Live subdomains": sum(1 for s in data["subdomains"] if s.is_live),
         "JS findings": len(data["js_findings"]),
         "Secrets found": sum(1 for j in data["js_findings"] if j.finding_type == "secret"),
+        "Parameters": len(data.get("parameters", [])),
+        "XSS findings": len(data.get("xss_findings", [])),
+        "XSS confirmed": sum(1 for x in data.get("xss_findings", []) if x.confirmed),
+        "SSRF findings": len(data.get("ssrf_findings", [])),
+        "SSRF confirmed": sum(1 for x in data.get("ssrf_findings", []) if x.confirmed),
         "Open ports": len(data["ports"]),
         "URLs discovered": len(data["urls"]),
     }
@@ -240,6 +258,138 @@ def _item_to_dict(item) -> dict:
     if hasattr(item, "model_dump"):
         return item.model_dump(mode="json")
     return vars(item)
+
+
+@app.command()
+def tgbot(
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+):
+    """
+    Run the Telegram bot listener — accept /scan, /status, /list commands via Telegram.
+
+    Setup:
+      1. Create a bot via @BotFather, get your token
+      2. Add to config.yaml:  telegram_token: "..." and telegram_chat_id: "..."
+      3. Run: reconify tgbot
+    """
+    cfg = load_config(config_path)
+    db_path = str(__import__("pathlib").Path(cfg["output_dir"]).parent / "reconify.db")
+
+    token = cfg.get("telegram_token") or __import__("os").getenv("TELEGRAM_TOKEN", "")
+    chat_id = cfg.get("telegram_chat_id") or __import__("os").getenv("TELEGRAM_CHAT_ID", "")
+
+    if not token or not chat_id:
+        rprint("[red]Error: telegram_token and telegram_chat_id must be configured.[/red]")
+        rprint("Set them in ~/.reconify/config.yaml or as env vars TELEGRAM_TOKEN / TELEGRAM_CHAT_ID")
+        raise typer.Exit(1)
+
+    from reconify.notify.telegram import TelegramBot
+    bot = TelegramBot(token, chat_id)
+
+    console.print(Panel(
+        "[bold cyan]Telegram bot started[/bold cyan]\n"
+        "Commands:\n"
+        "  /scan <target> [modules]  — start a scan\n"
+        "  /list                     — list recent scans\n"
+        "  /status <scan_id>         — check scan status\n"
+        "  /report <scan_id>         — get AI report\n"
+        "  /stop                     — stop the bot",
+        title="Reconify Telegram Bot",
+    ))
+
+    async def on_command(cmd: str, args: list[str]):
+        if cmd == "scan":
+            if not args:
+                await bot.send("Usage: /scan <target> [modules]\nExample: /scan example.com sub,js,xss,ssrf")
+                return
+            target = args[0]
+            mod_list = args[1].split(",") if len(args) > 1 else ["sub", "js", "params", "xss", "ssrf"]
+            mod_list = [m for m in mod_list if m in VALID_MODULES]
+
+            await bot.send(f"🚀 Starting scan: <code>{target}</code>\nModules: {', '.join(mod_list)}")
+
+            from reconify.core.runner import run_scan
+
+            def on_event(ev: dict):
+                __import__("asyncio").create_task(bot.send_finding(ev) if bot else __import__("asyncio").sleep(0))
+
+            asyncio.create_task(_run_and_notify(target, mod_list, cfg, db_path, bot))
+
+        elif cmd == "list":
+            scans = list_scans(db_path)[:5]
+            if not scans:
+                await bot.send("No scans yet.")
+                return
+            lines = ["<b>Recent scans:</b>"]
+            for s in scans:
+                lines.append(f"#{s.id} <code>{s.target}</code> [{s.status}] {str(s.started_at)[:16]}")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "status":
+            if not args:
+                await bot.send("Usage: /status <scan_id>")
+                return
+            try:
+                scan_id = int(args[0])
+                data = get_scan_data(scan_id, db_path)
+                s = data["scan"]
+                if not s:
+                    await bot.send(f"Scan #{scan_id} not found.")
+                    return
+                runs = data.get("module_runs", {})
+                lines = [f"<b>Scan #{scan_id}</b> — {s.target} [{s.status}]", ""]
+                for mod, run in runs.items():
+                    lines.append(f"  {mod}: {run.status} ({run.count} findings)")
+                await bot.send("\n".join(lines))
+            except Exception as e:
+                await bot.send(f"Error: {e}")
+
+        elif cmd == "report":
+            if not args:
+                await bot.send("Usage: /report <scan_id>")
+                return
+            try:
+                scan_id = int(args[0])
+                data = get_scan_data(scan_id, db_path)
+                agg = data.get("ai_reports", {}).get("aggregate", {})
+                if not agg:
+                    await bot.send("No AI report for this scan. Run with ANTHROPIC_API_KEY set.")
+                    return
+                summary = agg.get("executive_summary", "No summary.")
+                vecs = agg.get("top_attack_vectors", [])[:3]
+                lines = [f"<b>AI Report — Scan #{scan_id}</b>", "", summary, ""]
+                for v in vecs:
+                    lines.append(f"[{v.get('priority','?').upper()}] {v.get('title','')}: {v.get('description','')[:100]}")
+                await bot.send("\n".join(lines))
+            except Exception as e:
+                await bot.send(f"Error: {e}")
+
+        elif cmd == "stop":
+            await bot.send("👋 Bot stopped.")
+            raise SystemExit(0)
+
+    asyncio.run(bot.poll(on_command))
+
+
+async def _run_and_notify(target: str, modules: list[str], cfg: dict, db_path: str, bot):
+    from reconify.core.runner import run_scan
+
+    def on_event(ev: dict):
+        t = ev.get("type", "")
+        if t in ("xss_finding", "ssrf_finding") and ev.get("confirmed"):
+            __import__("asyncio").create_task(bot.send_finding(ev))
+
+    data = await run_scan(target, modules, cfg, db_path, on_event=on_event)
+    scan = data["scan"]
+    summary = {
+        "Subdomains": len(data["subdomains"]),
+        "Parameters": len(data.get("parameters", [])),
+        "XSS": len(data.get("xss_findings", [])),
+        "XSS confirmed": sum(1 for x in data.get("xss_findings", []) if x.confirmed),
+        "SSRF": len(data.get("ssrf_findings", [])),
+        "SSRF confirmed": sum(1 for x in data.get("ssrf_findings", []) if x.confirmed),
+    }
+    await bot.send_scan_done(scan.id, target, summary)
 
 
 if __name__ == "__main__":

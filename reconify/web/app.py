@@ -60,6 +60,9 @@ async def scan_view(request: Request, scan_id: int):
         "js_findings": data["js_findings"],
         "ports": data["ports"],
         "urls": data["urls"][:500],
+        "parameters": data.get("parameters", []),
+        "xss_findings": data.get("xss_findings", []),
+        "ssrf_findings": data.get("ssrf_findings", []),
         "ai_reports": data["ai_reports"],
         "module_runs": data.get("module_runs", {}),
     })
@@ -254,6 +257,9 @@ async def api_scan_data(scan_id: int):
         "js_findings": [_m(j) for j in data["js_findings"]],
         "ports": [_m(p) for p in data["ports"]],
         "urls": [_m(u) for u in data["urls"][:500]],
+        "parameters": [_m(p) for p in data.get("parameters", [])],
+        "xss_findings": [_m(x) for x in data.get("xss_findings", [])],
+        "ssrf_findings": [_m(x) for x in data.get("ssrf_findings", [])],
         "ai_reports": data["ai_reports"],
     }
 

@@ -76,6 +76,40 @@ class AiReport(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class Parameter(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_id: int = Field(foreign_key="scan.id")
+    url: str
+    param: str
+    method: str = "GET"         # GET | POST
+    source: str = ""            # wayback | js | crawl | bruteforce
+    param_type: str = ""        # xss | ssrf | redirect | generic
+
+
+class XssFinding(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_id: int = Field(foreign_key="scan.id")
+    url: str
+    param: str
+    payload: str
+    finding_type: str           # reflected | dom | blind | csti | header
+    evidence: Optional[str] = None   # snippet of response proving reflection
+    confirmed: bool = False
+    tool: str = ""              # dalfox | manual | nuclei
+
+
+class SsrfFinding(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_id: int = Field(foreign_key="scan.id")
+    url: str
+    param: str
+    payload: str
+    finding_type: str           # blind | metadata | open_redirect_chain | internal_port
+    callback_id: Optional[str] = None  # interactsh interaction ID
+    metadata_path: Optional[str] = None  # what cloud metadata was reached
+    confirmed: bool = False
+
+
 # ── Engine factory ────────────────────────────────────────────────────────────
 
 _engines: dict[str, object] = {}
@@ -198,14 +232,16 @@ def get_scan_data(scan_id: int, db_path: str) -> dict:
         urls = list(s.exec(select(Url).where(Url.scan_id == scan_id)).all())
         reports = list(s.exec(select(AiReport).where(AiReport.scan_id == scan_id)).all())
         module_runs = list(s.exec(select(ModuleRun).where(ModuleRun.scan_id == scan_id)).all())
+        parameters = list(s.exec(select(Parameter).where(Parameter.scan_id == scan_id)).all())
+        xss_findings = list(s.exec(select(XssFinding).where(XssFinding.scan_id == scan_id)).all())
+        ssrf_findings = list(s.exec(select(SsrfFinding).where(SsrfFinding.scan_id == scan_id)).all())
 
         ai_reports = {r.module: json.loads(r.report_json) for r in reports}
         module_run_map = {r.module: r for r in module_runs}
 
-        # Expunge all before closing session
-        for obj_list in (subdomains, js_findings, ports, urls, reports, module_runs):
-            for obj in obj_list:
-                s.expunge(obj)
+        all_objs = subdomains + js_findings + ports + urls + reports + module_runs + parameters + xss_findings + ssrf_findings
+        for obj in all_objs:
+            s.expunge(obj)
         if scan:
             s.expunge(scan)
 
@@ -215,6 +251,9 @@ def get_scan_data(scan_id: int, db_path: str) -> dict:
             "js_findings": js_findings,
             "ports": ports,
             "urls": urls,
+            "parameters": parameters,
+            "xss_findings": xss_findings,
+            "ssrf_findings": ssrf_findings,
             "ai_reports": ai_reports,
             "module_runs": module_run_map,
         }
@@ -237,6 +276,12 @@ def get_module_data(scan_id: int, module: str, db_path: str) -> dict:
             items = list(s.exec(select(Port).where(Port.scan_id == scan_id)).all())
         elif module == "content":
             items = list(s.exec(select(Url).where(Url.scan_id == scan_id)).all())
+        elif module == "params":
+            items = list(s.exec(select(Parameter).where(Parameter.scan_id == scan_id)).all())
+        elif module == "xss":
+            items = list(s.exec(select(XssFinding).where(XssFinding.scan_id == scan_id)).all())
+        elif module == "ssrf":
+            items = list(s.exec(select(SsrfFinding).where(SsrfFinding.scan_id == scan_id)).all())
         elif module == "ai":
             items = list(s.exec(select(AiReport).where(AiReport.scan_id == scan_id)).all())
 

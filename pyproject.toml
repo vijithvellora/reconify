@@ -24,6 +24,7 @@ dependencies = [
     "python-nmap>=0.7",
     "jsbeautifier>=1.15",
     "sse-starlette>=2.1",
+    "httpx[asyncio]>=0.27",
 ]
 
 [project.optional-dependencies]

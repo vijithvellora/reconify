@@ -19,6 +19,7 @@ async def run_module(
     config: dict,
     db_path: str,
     on_event: Callable[[dict], None] | None = None,
+    notifier=None,
 ) -> int:
     """
     Run a single module against an existing scan. Persists results and updates
@@ -27,6 +28,8 @@ async def run_module(
     def emit(event: dict):
         if on_event:
             on_event(event)
+        if notifier:
+            asyncio.create_task(notifier.on_event(event))
 
     # Look up target from scan record
     with storage.get_session(db_path) as s:
@@ -89,9 +92,13 @@ async def run_scan(
     Create a new scan and run all requested modules sequentially.
     Returns final scan data dict.
     """
+    from reconify.notify.telegram import TelegramNotifier
+    notifier = TelegramNotifier(config)
+
     def emit(event: dict):
         if on_event:
             on_event(event)
+        asyncio.create_task(notifier.on_event(event))
 
     scan = storage.create_scan(target, modules, db_path)
     scan_id = scan.id
@@ -101,7 +108,7 @@ async def run_scan(
 
     try:
         for mod_name in modules:
-            await run_module(scan_id, mod_name, config, db_path, on_event=on_event)
+            await run_module(scan_id, mod_name, config, db_path, on_event=on_event, notifier=notifier)
 
         # AI analysis after all modules
         if config.get("anthropic_api_key"):
@@ -118,6 +125,19 @@ async def run_scan(
                 emit({"type": "module_error", "module": "ai", "error": str(exc)})
 
         storage.finish_scan(scan_id, db_path)
+        # Send summary to Telegram
+        data = storage.get_scan_data(scan_id, db_path)
+        summary = {
+            "Subdomains": len(data["subdomains"]),
+            "Live": sum(1 for s in data["subdomains"] if s.is_live),
+            "JS Findings": len(data["js_findings"]),
+            "Params": len(data.get("parameters", [])),
+            "XSS": len(data.get("xss_findings", [])),
+            "SSRF": len(data.get("ssrf_findings", [])),
+            "Ports": len(data["ports"]),
+            "URLs": len(data["urls"]),
+        }
+        asyncio.create_task(notifier.bot.send_scan_done(scan_id, target, summary) if notifier.enabled else asyncio.sleep(0))
         emit({"type": "scan_done", "scan_id": scan_id})
     except Exception as exc:
         storage.finish_scan(scan_id, db_path, error=True)
@@ -136,9 +156,13 @@ async def run_scan_by_id(
     Run all modules for an already-created scan record.
     Used by the web API: POST /api/scan creates the record, then POST /api/scan/{id}/run triggers this.
     """
+    from reconify.notify.telegram import TelegramNotifier
+    notifier = TelegramNotifier(config)
+
     def emit(event: dict):
         if on_event:
             on_event(event)
+        asyncio.create_task(notifier.on_event(event))
 
     with storage.get_session(db_path) as s:
         scan = s.get(storage.Scan, scan_id)
@@ -152,7 +176,7 @@ async def run_scan_by_id(
 
     try:
         for mod_name in modules:
-            await run_module(scan_id, mod_name, config, db_path, on_event=on_event)
+            await run_module(scan_id, mod_name, config, db_path, on_event=on_event, notifier=notifier)
 
         if config.get("anthropic_api_key"):
             storage.module_start(scan_id, "ai", db_path)
@@ -192,6 +216,15 @@ def _load_module(
     if name == "content":
         from reconify.modules.content import ContentModule
         return ContentModule(target, scan_id, config, db_path)
+    if name == "params":
+        from reconify.modules.params import ParamModule
+        return ParamModule(target, scan_id, config, db_path)
+    if name == "xss":
+        from reconify.modules.xss import XssModule
+        return XssModule(target, scan_id, config, db_path)
+    if name == "ssrf":
+        from reconify.modules.ssrf import SsrfModule
+        return SsrfModule(target, scan_id, config, db_path)
     return None
 
 
@@ -231,5 +264,36 @@ def _persist(result: dict, scan_id: int, db_path: str):
                 url=result["url"],
                 source=result.get("source", ""),
                 status_code=result.get("status_code"),
+            ))
+        elif rtype == "parameter":
+            s.add(storage.Parameter(
+                scan_id=scan_id,
+                url=result["url"],
+                param=result["param"],
+                method=result.get("method", "GET"),
+                source=result.get("source", ""),
+                param_type=result.get("param_type", "generic"),
+            ))
+        elif rtype == "xss_finding":
+            s.add(storage.XssFinding(
+                scan_id=scan_id,
+                url=result["url"],
+                param=result.get("param", ""),
+                payload=result.get("payload", ""),
+                finding_type=result["finding_type"],
+                evidence=result.get("evidence"),
+                confirmed=result.get("confirmed", False),
+                tool=result.get("tool", ""),
+            ))
+        elif rtype == "ssrf_finding":
+            s.add(storage.SsrfFinding(
+                scan_id=scan_id,
+                url=result["url"],
+                param=result.get("param", ""),
+                payload=result.get("payload", ""),
+                finding_type=result["finding_type"],
+                callback_id=result.get("callback_id"),
+                metadata_path=result.get("metadata_path"),
+                confirmed=result.get("confirmed", False),
             ))
         s.commit()
