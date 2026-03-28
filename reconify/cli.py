@@ -286,87 +286,275 @@ def tgbot(
     from reconify.notify.telegram import TelegramBot
     bot = TelegramBot(token, chat_id)
 
+    _HELP = (
+        "🤖 <b>Reconify Bot Commands</b>\n\n"
+        "<b>Scanning</b>\n"
+        "/scan &lt;target&gt; [modules] — start a full scan\n"
+        "/quickscan &lt;target&gt; — fast scan (sub+js only)\n"
+        "/module &lt;id&gt; &lt;module&gt; — re-run one module on existing scan\n\n"
+        "<b>Results</b>\n"
+        "/list — recent scans\n"
+        "/status &lt;id&gt; — per-module progress\n"
+        "/findings &lt;id&gt; — top findings summary\n"
+        "/subdomains &lt;id&gt; — list live subdomains\n"
+        "/ports &lt;id&gt; — open ports\n"
+        "/secrets &lt;id&gt; — JS secrets found\n"
+        "/xss &lt;id&gt; — XSS findings\n"
+        "/ssrf &lt;id&gt; — SSRF findings\n"
+        "/report &lt;id&gt; — full AI report\n\n"
+        "<b>Management</b>\n"
+        "/delete &lt;id&gt; — delete a scan\n"
+        "/modules — list available modules\n"
+        "/stop — stop the bot\n"
+        "/help — show this message"
+    )
+
     console.print(Panel(
         "[bold cyan]Telegram bot started[/bold cyan]\n"
-        "Commands:\n"
-        "  /scan <target> [modules]  — start a scan\n"
-        "  /list                     — list recent scans\n"
-        "  /status <scan_id>         — check scan status\n"
-        "  /report <scan_id>         — get AI report\n"
-        "  /stop                     — stop the bot",
+        "Send /help to your bot for the full command list.",
         title="Reconify Telegram Bot",
     ))
 
     async def on_command(cmd: str, args: list[str]):
-        if cmd == "scan":
+        try:
+            await _dispatch(cmd, args, bot, cfg, db_path)
+        except Exception as e:
+            await bot.send(f"❌ Error: {e}")
+
+    async def _dispatch(cmd: str, args: list[str], bot, cfg, db_path):
+        if cmd in ("help", "start"):
+            await bot.send(_HELP)
+
+        elif cmd == "modules":
+            mods = "\n".join(f"  <code>{m}</code>" for m in VALID_MODULES)
+            await bot.send(f"<b>Available modules:</b>\n{mods}")
+
+        elif cmd == "scan":
             if not args:
-                await bot.send("Usage: /scan <target> [modules]\nExample: /scan example.com sub,js,xss,ssrf")
+                await bot.send("Usage: /scan &lt;target&gt; [mod1,mod2]\nExample: /scan example.com sub,js,xss,ssrf")
                 return
             target = args[0]
-            mod_list = args[1].split(",") if len(args) > 1 else ["sub", "js", "params", "xss", "ssrf"]
+            mod_list = args[1].split(",") if len(args) > 1 else list(VALID_MODULES)
             mod_list = [m for m in mod_list if m in VALID_MODULES]
-
-            await bot.send(f"🚀 Starting scan: <code>{target}</code>\nModules: {', '.join(mod_list)}")
-
-            from reconify.core.runner import run_scan
-
-            def on_event(ev: dict):
-                __import__("asyncio").create_task(bot.send_finding(ev) if bot else __import__("asyncio").sleep(0))
-
+            await bot.send(f"🚀 Starting scan: <code>{target}</code>\nModules: <code>{', '.join(mod_list)}</code>")
             asyncio.create_task(_run_and_notify(target, mod_list, cfg, db_path, bot))
 
-        elif cmd == "list":
-            scans = list_scans(db_path)[:5]
-            if not scans:
-                await bot.send("No scans yet.")
+        elif cmd == "quickscan":
+            if not args:
+                await bot.send("Usage: /quickscan &lt;target&gt;")
                 return
+            target = args[0]
+            mod_list = ["sub", "js"]
+            await bot.send(f"⚡ Quick scan: <code>{target}</code> (sub + js)")
+            asyncio.create_task(_run_and_notify(target, mod_list, cfg, db_path, bot))
+
+        elif cmd == "module":
+            if len(args) < 2:
+                await bot.send("Usage: /module &lt;scan_id&gt; &lt;module&gt;")
+                return
+            scan_id, module = int(args[0]), args[1]
+            if module not in VALID_MODULES:
+                await bot.send(f"Unknown module. Choose from: {', '.join(VALID_MODULES)}")
+                return
+            from reconify.core.runner import run_module
+            await bot.send(f"▶️ Running <code>{module}</code> on scan #{scan_id}…")
+            asyncio.create_task(_run_module_and_notify(scan_id, module, cfg, db_path, bot))
+
+        elif cmd == "list":
+            scans = list_scans(db_path)[:8]
+            if not scans:
+                await bot.send("No scans yet. Use /scan &lt;target&gt; to start one.")
+                return
+            status_icon = {"done": "✅", "running": "🔄", "error": "❌", "pending": "⏳"}
             lines = ["<b>Recent scans:</b>"]
             for s in scans:
-                lines.append(f"#{s.id} <code>{s.target}</code> [{s.status}] {str(s.started_at)[:16]}")
+                icon = status_icon.get(s.status, "•")
+                lines.append(f"{icon} <b>#{s.id}</b> <code>{s.target}</code> — {s.status} ({str(s.started_at)[:16]})")
             await bot.send("\n".join(lines))
 
         elif cmd == "status":
             if not args:
-                await bot.send("Usage: /status <scan_id>")
+                await bot.send("Usage: /status &lt;scan_id&gt;")
                 return
-            try:
-                scan_id = int(args[0])
-                data = get_scan_data(scan_id, db_path)
-                s = data["scan"]
-                if not s:
-                    await bot.send(f"Scan #{scan_id} not found.")
-                    return
-                runs = data.get("module_runs", {})
-                lines = [f"<b>Scan #{scan_id}</b> — {s.target} [{s.status}]", ""]
-                for mod, run in runs.items():
-                    lines.append(f"  {mod}: {run.status} ({run.count} findings)")
-                await bot.send("\n".join(lines))
-            except Exception as e:
-                await bot.send(f"Error: {e}")
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            s = data["scan"]
+            if not s:
+                await bot.send(f"Scan #{scan_id} not found.")
+                return
+            runs = data.get("module_runs", {})
+            status_icon = {"done": "✅", "running": "🔄", "error": "❌", "pending": "⏳", "skipped": "⏭️"}
+            lines = [f"<b>Scan #{scan_id}</b> — <code>{s.target}</code> [{s.status}]", ""]
+            for mod, run in runs.items():
+                icon = status_icon.get(run.status, "•")
+                elapsed = f" {run.elapsed_seconds:.0f}s" if run.elapsed_seconds else ""
+                lines.append(f"  {icon} {mod}: {run.count} findings{elapsed}")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "findings":
+            if not args:
+                await bot.send("Usage: /findings &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            s = data["scan"]
+            if not s:
+                await bot.send(f"Scan #{scan_id} not found.")
+                return
+            xss_c = sum(1 for x in data.get("xss_findings", []) if x.confirmed)
+            ssrf_c = sum(1 for x in data.get("ssrf_findings", []) if x.confirmed)
+            secrets = [j for j in data.get("js_findings", []) if j.finding_type == "secret"]
+            live = [d for d in data.get("subdomains", []) if d.is_live]
+            lines = [
+                f"<b>Findings — Scan #{scan_id}</b> (<code>{s.target}</code>)",
+                "",
+                f"🌐 Subdomains: {len(data['subdomains'])} ({len(live)} live)",
+                f"🔌 Open ports: {len(data['ports'])}",
+                f"🗂️ URLs discovered: {len(data['urls'])}",
+                f"🔍 Parameters: {len(data.get('parameters', []))}",
+                f"🔑 JS secrets: {len(secrets)}",
+                f"💥 XSS: {len(data.get('xss_findings', []))} ({xss_c} confirmed)",
+                f"🔗 SSRF: {len(data.get('ssrf_findings', []))} ({ssrf_c} confirmed)",
+            ]
+            await bot.send("\n".join(lines))
+
+        elif cmd == "subdomains":
+            if not args:
+                await bot.send("Usage: /subdomains &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            subs = data.get("subdomains", [])
+            if not subs:
+                await bot.send("No subdomains found for this scan.")
+                return
+            live = [s for s in subs if s.is_live]
+            lines = [f"<b>Subdomains #{scan_id}</b> — {len(subs)} total, {len(live)} live\n"]
+            for s in live[:30]:
+                lines.append(f"  ✅ <code>{s.host}</code> {s.http_status or ''}")
+            if len(live) > 30:
+                lines.append(f"  … and {len(live)-30} more")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "ports":
+            if not args:
+                await bot.send("Usage: /ports &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            ports = data.get("ports", [])
+            if not ports:
+                await bot.send("No open ports found for this scan.")
+                return
+            lines = [f"<b>Open ports — Scan #{scan_id}</b>\n"]
+            for p in ports[:30]:
+                svc = f" {p.service}" if p.service else ""
+                ver = f" {p.version}" if p.version else ""
+                lines.append(f"  <code>{p.host}:{p.port}/{p.protocol}</code>{svc}{ver}")
+            if len(ports) > 30:
+                lines.append(f"  … and {len(ports)-30} more")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "secrets":
+            if not args:
+                await bot.send("Usage: /secrets &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            secrets = [j for j in data.get("js_findings", []) if j.finding_type == "secret"]
+            if not secrets:
+                await bot.send("No secrets found for this scan.")
+                return
+            lines = [f"<b>Secrets — Scan #{scan_id}</b>\n"]
+            for s in secrets[:20]:
+                val = (s.value or "")[:60]
+                lines.append(f"🔑 <b>{s.secret_type}</b>: <code>{val}</code>")
+            if len(secrets) > 20:
+                lines.append(f"  … and {len(secrets)-20} more")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "xss":
+            if not args:
+                await bot.send("Usage: /xss &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            findings = data.get("xss_findings", [])
+            if not findings:
+                await bot.send("No XSS findings for this scan.")
+                return
+            confirmed = [f for f in findings if f.confirmed]
+            lines = [f"<b>XSS — Scan #{scan_id}</b> ({len(confirmed)} confirmed / {len(findings)} total)\n"]
+            for f in (confirmed or findings)[:15]:
+                badge = "✅" if f.confirmed else "⚠️"
+                lines.append(f"{badge} [{f.finding_type}] <code>{f.param}</code>\n   <code>{(f.url or '')[:70]}</code>")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "ssrf":
+            if not args:
+                await bot.send("Usage: /ssrf &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            findings = data.get("ssrf_findings", [])
+            if not findings:
+                await bot.send("No SSRF findings for this scan.")
+                return
+            confirmed = [f for f in findings if f.confirmed]
+            lines = [f"<b>SSRF — Scan #{scan_id}</b> ({len(confirmed)} confirmed / {len(findings)} total)\n"]
+            for f in (confirmed or findings)[:15]:
+                badge = "✅" if f.confirmed else "⚠️"
+                meta = f.metadata_path or f.callback_id or ""
+                lines.append(f"{badge} [{f.finding_type}] <code>{f.param}</code>\n   {meta[:80]}")
+            await bot.send("\n".join(lines))
 
         elif cmd == "report":
             if not args:
-                await bot.send("Usage: /report <scan_id>")
+                await bot.send("Usage: /report &lt;scan_id&gt;")
                 return
-            try:
-                scan_id = int(args[0])
-                data = get_scan_data(scan_id, db_path)
-                agg = data.get("ai_reports", {}).get("aggregate", {})
-                if not agg:
-                    await bot.send("No AI report for this scan. Run with ANTHROPIC_API_KEY set.")
-                    return
-                summary = agg.get("executive_summary", "No summary.")
-                vecs = agg.get("top_attack_vectors", [])[:3]
-                lines = [f"<b>AI Report — Scan #{scan_id}</b>", "", summary, ""]
+            scan_id = int(args[0])
+            data = get_scan_data(scan_id, db_path)
+            agg = data.get("ai_reports", {}).get("aggregate", {})
+            if not agg:
+                await bot.send("No AI report for this scan. Run with ANTHROPIC_API_KEY set.")
+                return
+            summary = agg.get("executive_summary", "No summary.")
+            vecs = agg.get("top_attack_vectors", [])[:5]
+            lines = [f"<b>AI Report — Scan #{scan_id}</b>", "", summary]
+            if vecs:
+                lines += ["", "<b>Top attack vectors:</b>"]
                 for v in vecs:
-                    lines.append(f"[{v.get('priority','?').upper()}] {v.get('title','')}: {v.get('description','')[:100]}")
-                await bot.send("\n".join(lines))
-            except Exception as e:
-                await bot.send(f"Error: {e}")
+                    pri = v.get("priority", "?").upper()
+                    lines.append(f"[{pri}] <b>{v.get('title','')}</b>: {v.get('description','')[:120]}")
+            await bot.send("\n".join(lines))
+
+        elif cmd == "delete":
+            if not args:
+                await bot.send("Usage: /delete &lt;scan_id&gt;")
+                return
+            scan_id = int(args[0])
+            from reconify.core.storage import get_session, Scan, Subdomain, JsFinding, Port, Url, AiReport, ModuleRun
+            from sqlmodel import select
+            with get_session(db_path) as sess:
+                scan = sess.get(Scan, scan_id)
+                if not scan:
+                    await bot.send(f"Scan #{scan_id} not found.")
+                    return
+                target = scan.target
+                for model in (Subdomain, JsFinding, Port, Url, AiReport, ModuleRun):
+                    rows = sess.exec(select(model).where(model.scan_id == scan_id)).all()
+                    for r in rows:
+                        sess.delete(r)
+                sess.delete(scan)
+                sess.commit()
+            await bot.send(f"🗑️ Scan #{scan_id} (<code>{target}</code>) deleted.")
 
         elif cmd == "stop":
             await bot.send("👋 Bot stopped.")
             raise SystemExit(0)
+
+        else:
+            await bot.send(f"Unknown command: /{cmd}\nSend /help for the full list.")
 
     asyncio.run(bot.poll(on_command))
 
@@ -377,7 +565,13 @@ async def _run_and_notify(target: str, modules: list[str], cfg: dict, db_path: s
     def on_event(ev: dict):
         t = ev.get("type", "")
         if t in ("xss_finding", "ssrf_finding") and ev.get("confirmed"):
-            __import__("asyncio").create_task(bot.send_finding(ev))
+            asyncio.create_task(bot.send_finding(ev))
+        elif t == "js_finding" and ev.get("finding_type") == "secret":
+            asyncio.create_task(bot.send_finding(ev))
+        elif t == "module_done":
+            asyncio.create_task(bot.send_module_done(
+                ev["module"], ev.get("count", 0), ev.get("elapsed", 0)
+            ))
 
     data = await run_scan(target, modules, cfg, db_path, on_event=on_event)
     scan = data["scan"]
@@ -390,6 +584,20 @@ async def _run_and_notify(target: str, modules: list[str], cfg: dict, db_path: s
         "SSRF confirmed": sum(1 for x in data.get("ssrf_findings", []) if x.confirmed),
     }
     await bot.send_scan_done(scan.id, target, summary)
+
+
+async def _run_module_and_notify(scan_id: int, module: str, cfg: dict, db_path: str, bot):
+    from reconify.core.runner import run_module
+
+    count = 0
+
+    def on_event(ev: dict):
+        nonlocal count
+        if ev.get("type") not in ("module_start", "module_done", "module_skip"):
+            count += 1
+
+    await run_module(scan_id, module, cfg, db_path, on_event=on_event)
+    await bot.send(f"✅ Module <code>{module}</code> finished — {count} findings.")
 
 
 if __name__ == "__main__":
