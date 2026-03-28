@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reconify"
+version = "0.1.0"
+description = "Bug bounty recon tool with AI-powered analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "typer[all]>=0.12",
+    "httpx[asyncio]>=0.27",
+    "aiodns>=3.2",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlmodel>=0.0.19",
+    "aiosqlite>=0.20",
+    "anthropic>=0.28",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "beautifulsoup4>=4.12",
+    "python-nmap>=0.7",
+    "jsbeautifier>=1.15",
+    "sse-starlette>=2.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-httpx>=0.30"]
+
+[project.scripts]
+reconify = "reconify.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reconify"]

@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}Scan #{{ scan.id }} — {{ scan.target }}{% endblock %}
+
+{% block content %}
+<div x-data="scanPage({{ scan.id }})" x-init="init()">
+
+  <!-- Header -->
+  <div class="flex items-start justify-between mb-6">
+    <div>
+      <div class="flex items-center gap-3 mb-1">
+        <h1 class="text-2xl font-bold text-white">{{ scan.target }}</h1>
+        <span class="text-xs px-2 py-0.5 rounded
+          {% if scan.status == 'done' %}bg-green-900 text-green-300
+          {% elif scan.status == 'running' %}bg-yellow-900 text-yellow-300 animate-pulse
+          {% elif scan.status == 'error' %}bg-red-900 text-red-300
+          {% else %}bg-gray-700 text-gray-400{% endif %}">
+          {{ scan.status }}
+        </span>
+      </div>
+      <p class="text-gray-500 text-sm">
+        Scan #{{ scan.id }} · {{ scan.modules }}
+        {% if scan.started_at %} · started {{ scan.started_at | string | truncate(16, True, '') }}{% endif %}
+      </p>
+    </div>
+    <div class="flex gap-2">
+      <!-- Run individual module buttons (only if scan is done or there are pending modules) -->
+      <div class="flex gap-2 flex-wrap justify-end">
+        {% for mod in scan.modules.split(',') %}
+        <button @click="runModule('{{ mod }}')"
+                :disabled="moduleRunning['{{ mod }}']"
+                class="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 border border-gray-700 text-gray-300 px-3 py-1.5 rounded transition-colors">
+          <span x-show="!moduleRunning['{{ mod }}']">↺ {{ mod }}</span>
+          <span x-show="moduleRunning['{{ mod }}']" x-cloak class="animate-pulse">running…</span>
+        </button>
+        {% endfor %}
+      </div>
+      <a href="/api/scan/{{ scan.id }}/export"
+         class="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-4 py-1.5 rounded text-sm">
+        Export
+      </a>
+    </div>
+  </div>
+
+  <!-- Module status cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    {% set module_labels = {'sub': 'Subdomains', 'js': 'JS Recon', 'ports': 'Ports', 'content': 'Content', 'ai': 'AI Analysis'} %}
+    {% for mod_name, run in module_runs.items() %}
+    <div class="bg-gray-900 border rounded-lg p-4 transition-all"
+         :class="moduleCardClass('{{ mod_name }}')"
+         id="card-{{ mod_name }}">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-semibold text-gray-300">{{ module_labels.get(mod_name, mod_name) }}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded"
+              :class="moduleStatusBadge('{{ mod_name }}')"
+              x-text="moduleCounts['{{ mod_name }}']?.status || '{{ run.status }}'">
+        </span>
+      </div>
+      <div class="flex items-end justify-between">
+        <span class="text-2xl font-bold text-white"
+              x-text="moduleCounts['{{ mod_name }}']?.count ?? {{ run.count }}">
+        </span>
+        <span class="text-xs text-gray-500"
+              x-text="(moduleCounts['{{ mod_name }}']?.elapsed || 0) + 's'">
+        </span>
+      </div>
+      <!-- Live progress bar -->
+      <div class="mt-2 h-1 bg-gray-800 rounded overflow-hidden">
+        <div class="h-full rounded transition-all"
+             :class="{
+               'bg-cyan-500 animate-pulse w-full': moduleCounts['{{ mod_name }}']?.status === 'running' || '{{ run.status }}' === 'running',
+               'bg-green-500 w-full': (moduleCounts['{{ mod_name }}']?.status || '{{ run.status }}') === 'done',
+               'bg-red-500 w-full': (moduleCounts['{{ mod_name }}']?.status || '{{ run.status }}') === 'error',
+               'w-0': (moduleCounts['{{ mod_name }}']?.status || '{{ run.status }}') === 'pending',
+             }"></div>
+      </div>
+      <p class="text-xs text-gray-600 mt-1 truncate"
+         x-text="moduleCounts['{{ mod_name }}']?.last || ''"></p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- AI Report panel -->
+  {% if ai_reports.get('aggregate') %}
+  <div class="mb-6 bg-gray-900 border border-purple-900/60 rounded-xl p-5">
+    <h2 class="text-purple-400 font-bold text-lg mb-3">✨ AI Executive Summary</h2>
+    <p class="text-gray-300 text-sm mb-4">{{ ai_reports['aggregate'].get('executive_summary', '') }}</p>
+    {% if ai_reports['aggregate'].get('top_attack_vectors') %}
+    <div class="space-y-2">
+      {% for vec in ai_reports['aggregate']['top_attack_vectors'][:5] %}
+      <div class="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
+        <div class="flex items-center gap-2 mb-1">
+          {% set p = vec.get('priority', 'medium') %}
+          <span class="px-2 py-0.5 text-xs rounded
+            {% if p == 'critical' %}bg-red-900 text-red-300
+            {% elif p == 'high' %}bg-orange-900 text-orange-300
+            {% else %}bg-blue-900 text-blue-300{% endif %}">{{ p }}</span>
+          <span class="text-white text-sm font-medium">{{ vec.get('title', '') }}</span>
+        </div>
+        <p class="text-gray-400 text-xs">{{ vec.get('description', '')[:200] }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Tabs -->
+  <div class="border-b border-gray-800 mb-4 flex gap-0">
+    {% for tab, label, count in [
+      ('subdomains', 'Subdomains', subdomains|length),
+      ('js', 'JS Findings', js_findings|length),
+      ('ports', 'Ports', ports|length),
+      ('urls', 'URLs', urls|length),
+    ] %}
+    <button @click="tab = '{{ tab }}'"
+            :class="tab === '{{ tab }}' ? 'border-b-2 border-cyan-400 text-cyan-300' : 'text-gray-500 hover:text-gray-300'"
+            class="px-5 py-2 text-sm font-medium transition-colors">
+      {{ label }}
+      <span class="ml-1 text-xs {% if count > 0 %}text-gray-400{% else %}text-gray-700{% endif %}">{{ count }}</span>
+    </button>
+    {% endfor %}
+  </div>
+
+  <!-- Subdomains -->
+  <div x-show="tab === 'subdomains'" x-cloak>
+    <div class="flex gap-2 mb-3 flex-wrap">
+      <input x-model="subFilter" placeholder="Filter hosts…"
+             class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white w-64 focus:outline-none focus:border-cyan-500" />
+      <label class="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
+        <input type="checkbox" x-model="liveOnly" class="accent-cyan-400" />
+        Live only
+      </label>
+    </div>
+    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+          <tr>
+            <th class="px-4 py-2 text-left">Host</th>
+            <th class="px-4 py-2 text-left">Source</th>
+            <th class="px-4 py-2 text-left">Live</th>
+            <th class="px-4 py-2 text-left">HTTP</th>
+            <th class="px-4 py-2 text-left">IP</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          {% for s in subdomains %}
+          <tr class="hover:bg-gray-800/40"
+              x-show="(!subFilter || '{{ s.host }}'.includes(subFilter)) && (!liveOnly || {{ 'true' if s.is_live else 'false' }})">
+            <td class="px-4 py-2 text-cyan-400 font-mono">
+              <a href="https://{{ s.host }}" target="_blank" class="hover:underline">{{ s.host }}</a>
+            </td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ s.source }}</td>
+            <td class="px-4 py-2">
+              {% if s.is_live %}<span class="text-xs bg-green-900 text-green-300 px-1.5 py-0.5 rounded">LIVE</span>
+              {% else %}<span class="text-gray-700">—</span>{% endif %}
+            </td>
+            <td class="px-4 py-2 text-gray-400 text-xs">{{ s.status_code or '—' }}</td>
+            <td class="px-4 py-2 text-gray-500 text-xs font-mono">{{ s.ip or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- JS Findings -->
+  <div x-show="tab === 'js'" x-cloak>
+    <div class="flex gap-2 mb-3">
+      <select x-model="jsType" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none">
+        <option value="">All types</option>
+        <option value="secret">Secrets</option>
+        <option value="endpoint">Endpoints</option>
+        <option value="source_map">Source Maps</option>
+      </select>
+    </div>
+    <div class="space-y-2">
+      {% for j in js_findings %}
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-3"
+           x-show="!jsType || '{{ j.finding_type }}' === jsType">
+        <div class="flex items-center gap-2 mb-1.5">
+          {% if j.finding_type == 'secret' %}
+            <span class="text-xs bg-red-900 text-red-300 px-2 py-0.5 rounded font-bold">SECRET</span>
+            <span class="text-xs text-gray-400 font-mono">{{ j.secret_type }}</span>
+          {% elif j.finding_type == 'endpoint' %}
+            <span class="text-xs bg-blue-900 text-blue-300 px-2 py-0.5 rounded">ENDPOINT</span>
+          {% else %}
+            <span class="text-xs bg-purple-900 text-purple-300 px-2 py-0.5 rounded">SOURCE MAP</span>
+          {% endif %}
+        </div>
+        <div class="text-yellow-200 text-xs font-mono break-all">{{ j.value[:300] }}</div>
+        <div class="text-gray-600 text-xs mt-1 truncate">{{ j.js_url }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Ports -->
+  <div x-show="tab === 'ports'" x-cloak>
+    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+          <tr>
+            <th class="px-4 py-2 text-left">Host</th>
+            <th class="px-4 py-2 text-left">Port</th>
+            <th class="px-4 py-2 text-left">Proto</th>
+            <th class="px-4 py-2 text-left">Service</th>
+            <th class="px-4 py-2 text-left">Version</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          {% for p in ports %}
+          <tr class="hover:bg-gray-800/40">
+            <td class="px-4 py-2 text-gray-300 font-mono text-xs">{{ p.host }}</td>
+            <td class="px-4 py-2 text-yellow-400 font-mono font-bold">{{ p.port }}</td>
+            <td class="px-4 py-2 text-gray-400 text-xs">{{ p.protocol }}</td>
+            <td class="px-4 py-2 text-cyan-400 text-xs">{{ p.service or '—' }}</td>
+            <td class="px-4 py-2 text-gray-400 text-xs">{{ p.version or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- URLs -->
+  <div x-show="tab === 'urls'" x-cloak>
+    <div class="flex gap-2 mb-3 flex-wrap">
+      <input x-model="urlFilter" placeholder="Filter URLs…"
+             class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white w-96 focus:outline-none focus:border-cyan-500" />
+      <select x-model="urlSource" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none">
+        <option value="">All sources</option>
+        <option value="wayback">Wayback</option>
+        <option value="commoncrawl">CommonCrawl</option>
+        <option value="urlscan">URLScan</option>
+        <option value="robots">Robots</option>
+        <option value="sitemap">Sitemap</option>
+        <option value="ffuf">ffuf</option>
+      </select>
+    </div>
+    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800 text-gray-400 text-xs uppercase">
+          <tr>
+            <th class="px-4 py-2 text-left">URL</th>
+            <th class="px-4 py-2 text-left">Source</th>
+            <th class="px-4 py-2 text-left">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          {% for u in urls %}
+          <tr class="hover:bg-gray-800/40"
+              x-show="(!urlFilter || '{{ u.url | replace("'", "\\'") }}'.includes(urlFilter)) && (!urlSource || '{{ u.source }}' === urlSource)">
+            <td class="px-4 py-2">
+              <a href="{{ u.url }}" target="_blank"
+                 class="text-cyan-400 hover:underline text-xs font-mono truncate block max-w-2xl">{{ u.url }}</a>
+            </td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ u.source }}</td>
+            <td class="px-4 py-2 text-gray-400 text-xs">{{ u.status_code or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const MODULE_LABELS = {sub:'Subdomains', js:'JS Recon', ports:'Ports', content:'Content', ai:'AI Analysis'};
+
+function scanPage(scanId) {
+  return {
+    tab: 'subdomains',
+    subFilter: '', liveOnly: false,
+    jsType: '', urlFilter: '', urlSource: '',
+    moduleCounts: {},   // live state: { [module]: {status, count, elapsed, last} }
+    moduleRunning: {},  // which modules we triggered from the UI
+    _es: null,
+
+    init() {
+      // If scan is still running, subscribe to SSE
+      const status = '{{ scan.status }}';
+      if (status === 'running') {
+        this.subscribeSSE();
+      }
+    },
+
+    subscribeSSE() {
+      if (this._es) return;
+      this._es = new EventSource(`/api/scan/${scanId}/events`);
+      this._es.onmessage = (e) => this.handleEvent(JSON.parse(e.data));
+      this._es.onerror = () => { if (this._es) { this._es.close(); this._es = null; } };
+    },
+
+    handleEvent(ev) {
+      const m = ev.module;
+      if (!m) return;
+      if (!this.moduleCounts[m]) this.moduleCounts[m] = { status: 'pending', count: 0, elapsed: 0, last: '' };
+
+      const c = this.moduleCounts[m];
+      if (ev.type === 'module_start')    { c.status = 'running'; }
+      if (ev.type === 'module_progress') { c.count = ev.count; c.elapsed = ev.elapsed; }
+      if (ev.type === 'module_done')     { c.status = ev.error ? 'error' : 'done'; c.count = ev.count; c.elapsed = ev.elapsed; this.moduleRunning[m] = false; }
+      if (ev.type === 'module_error')    { c.status = 'error'; this.moduleRunning[m] = false; }
+      if (ev.type === 'subdomain')       { c.count++; c.last = ev.host + (ev.is_live ? ' [live]' : ''); }
+      if (ev.type === 'js_finding')      { c.count++; c.last = (ev.secret_type || ev.finding_type) + ': ' + (ev.value || '').slice(0,40); }
+      if (ev.type === 'port')            { c.count++; c.last = `${ev.host}:${ev.port}`; }
+      if (ev.type === 'url')             { c.count++; c.last = (ev.url || '').slice(0,60); }
+
+      if (ev.type === 'scan_done' || ev.type === 'done') {
+        if (this._es) { this._es.close(); this._es = null; }
+        setTimeout(() => window.location.reload(), 800);
+      }
+    },
+
+    async runModule(mod) {
+      this.moduleRunning[mod] = true;
+      if (!this.moduleCounts[mod]) this.moduleCounts[mod] = { status: 'pending', count: 0, elapsed: 0, last: '' };
+      this.moduleCounts[mod].status = 'running';
+      this.subscribeSSE();
+      await fetch(`/api/scan/${scanId}/module/${mod}`, { method: 'POST' });
+    },
+
+    moduleCardClass(mod) {
+      const s = this.moduleCounts[mod]?.status || '{{ "running" if scan.status == "running" else "done" }}';
+      return {
+        'border-cyan-700 shadow-cyan-900/30 shadow-md': s === 'running',
+        'border-green-700': s === 'done',
+        'border-red-700':   s === 'error',
+        'border-gray-700':  s === 'pending' || s === 'skipped',
+      };
+    },
+
+    moduleStatusBadge(mod) {
+      const s = this.moduleCounts[mod]?.status;
+      return {
+        'bg-cyan-900 text-cyan-300 animate-pulse': s === 'running',
+        'bg-green-900 text-green-300':             s === 'done',
+        'bg-red-900 text-red-300':                 s === 'error',
+        'bg-gray-700 text-gray-400':               !s || s === 'pending',
+      };
+    },
+  };
+}
+</script>
+{% endblock %}

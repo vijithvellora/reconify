@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}Reconify — Dashboard{% endblock %}
+
+{% block content %}
+<div x-data="dashboard()" x-init="init()">
+
+  <!-- New scan form -->
+  <div class="mb-8 bg-gray-900 rounded-xl border border-gray-800 p-6">
+    <h2 class="text-cyan-400 font-bold text-xl mb-4">New Scan</h2>
+    <div class="flex flex-wrap gap-4 items-end mb-4">
+      <div class="flex-1 min-w-60">
+        <label class="text-xs text-gray-400 mb-1 block">Target Domain</label>
+        <input x-model="newTarget" type="text" placeholder="example.com"
+               @keydown.enter="createAndRun()"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white focus:border-cyan-500 focus:outline-none" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 mb-1 block">Modules</label>
+        <div class="flex gap-3">
+          <template x-for="m in allModules" :key="m">
+            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+              <input type="checkbox" :value="m" x-model="selectedModules" class="accent-cyan-400 w-3.5 h-3.5" />
+              <span x-text="m" class="text-sm text-gray-300 font-mono"></span>
+            </label>
+          </template>
+        </div>
+      </div>
+      <button @click="createAndRun()" :disabled="!newTarget.trim() || busy"
+              class="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white px-6 py-2 rounded font-bold transition-colors">
+        <span x-show="!busy">Scan</span>
+        <span x-show="busy" x-cloak class="animate-pulse">Running…</span>
+      </button>
+    </div>
+
+    <!-- Module progress cards (shown once scan starts) -->
+    <div x-show="activeScanId !== null" x-cloak class="mt-4">
+      <div class="text-xs text-gray-500 mb-2">
+        Scan #<span x-text="activeScanId"></span> —
+        <a :href="'/scan/' + activeScanId" class="text-cyan-400 hover:underline">view details</a>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <template x-for="mod in moduleCards" :key="mod.name">
+          <div class="bg-gray-800 rounded-lg border p-3 transition-all duration-300"
+               :class="{
+                 'border-cyan-700': mod.status === 'running',
+                 'border-green-700': mod.status === 'done',
+                 'border-red-700': mod.status === 'error',
+                 'border-gray-700': mod.status === 'pending' || mod.status === 'skipped',
+               }">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-mono font-bold text-sm"
+                    :class="{
+                      'text-cyan-300': mod.status === 'running',
+                      'text-green-400': mod.status === 'done',
+                      'text-red-400': mod.status === 'error',
+                      'text-gray-500': mod.status === 'pending',
+                    }"
+                    x-text="mod.label"></span>
+              <!-- Status badge -->
+              <span class="text-xs px-1.5 py-0.5 rounded"
+                    :class="{
+                      'bg-cyan-900 text-cyan-300 animate-pulse': mod.status === 'running',
+                      'bg-green-900 text-green-300': mod.status === 'done',
+                      'bg-red-900 text-red-300': mod.status === 'error',
+                      'bg-gray-700 text-gray-400': mod.status === 'pending',
+                    }"
+                    x-text="mod.status"></span>
+            </div>
+            <!-- Count + elapsed -->
+            <div class="flex items-end justify-between">
+              <span class="text-2xl font-bold text-white" x-text="mod.count"></span>
+              <span class="text-xs text-gray-500" x-text="mod.elapsed ? mod.elapsed + 's' : ''"></span>
+            </div>
+            <!-- Progress bar (pulse while running) -->
+            <div class="mt-2 h-1 rounded bg-gray-700 overflow-hidden">
+              <div class="h-full rounded transition-all duration-500"
+                   :class="{
+                     'bg-cyan-500 animate-pulse w-full': mod.status === 'running',
+                     'bg-green-500 w-full': mod.status === 'done',
+                     'bg-red-500 w-full': mod.status === 'error',
+                     'w-0': mod.status === 'pending',
+                   }"></div>
+            </div>
+            <!-- Last finding preview -->
+            <p x-show="mod.last" x-text="mod.last" class="text-xs text-gray-500 mt-1.5 truncate"></p>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan history -->
+  <div class="flex items-center justify-between mb-4">
+    <h2 class="text-cyan-400 font-bold text-xl">Scan History</h2>
+    <button @click="loadScans()" class="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+  </div>
+
+  <template x-if="scans.length === 0">
+    <div class="text-gray-500 text-center py-16">No scans yet. Start your first recon above.</div>
+  </template>
+
+  <template x-if="scans.length > 0">
+    <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-800 text-gray-400 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-4 py-3 text-left">ID</th>
+            <th class="px-4 py-3 text-left">Target</th>
+            <th class="px-4 py-3 text-left">Modules</th>
+            <th class="px-4 py-3 text-left">Status</th>
+            <th class="px-4 py-3 text-left">Started</th>
+            <th class="px-4 py-3 text-left">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800">
+          <template x-for="scan in scans" :key="scan.id">
+            <tr class="hover:bg-gray-800/50">
+              <td class="px-4 py-3 text-cyan-400 font-mono" x-text="scan.id"></td>
+              <td class="px-4 py-3 text-white font-medium" x-text="scan.target"></td>
+              <td class="px-4 py-3 text-gray-400 text-xs font-mono" x-text="scan.modules"></td>
+              <td class="px-4 py-3">
+                <span class="text-xs px-2 py-0.5 rounded"
+                      :class="{
+                        'bg-green-900 text-green-300': scan.status === 'done',
+                        'bg-yellow-900 text-yellow-300': scan.status === 'running',
+                        'bg-red-900 text-red-300': scan.status === 'error',
+                        'bg-gray-700 text-gray-400': scan.status === 'pending',
+                      }"
+                      x-text="scan.status"></span>
+              </td>
+              <td class="px-4 py-3 text-gray-400 text-xs" x-text="fmtDate(scan.started_at)"></td>
+              <td class="px-4 py-3 flex gap-3">
+                <a :href="'/scan/' + scan.id" class="text-cyan-400 hover:underline text-xs">View</a>
+                <a :href="'/api/scan/' + scan.id + '/export'" class="text-gray-400 hover:text-white text-xs">Export</a>
+                <button @click="deleteScan(scan.id)" class="text-red-500 hover:text-red-400 text-xs">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </template>
+
+</div>
+
+<script>
+const MODULE_META = {
+  sub:     { label: 'Subdomains', icon: '🌐' },
+  js:      { label: 'JS Recon',   icon: '📜' },
+  ports:   { label: 'Ports',      icon: '🔌' },
+  content: { label: 'Content',    icon: '🗂️' },
+  ai:      { label: 'AI Analysis',icon: '✨' },
+};
+
+function dashboard() {
+  return {
+    newTarget: '',
+    selectedModules: ['sub', 'js', 'ports', 'content'],
+    allModules: ['sub', 'js', 'ports', 'content'],
+    busy: false,
+    activeScanId: null,
+    moduleCards: [],
+    scans: [],
+    _es: null,
+
+    async init() { await this.loadScans(); },
+
+    async loadScans() {
+      const r = await fetch('/api/scans');
+      this.scans = await r.json();
+    },
+
+    async createAndRun() {
+      if (!this.newTarget.trim() || this.busy) return;
+      this.busy = true;
+      this.activeScanId = null;
+
+      // 1. Create scan record
+      const cr = await fetch('/api/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ target: this.newTarget.trim(), modules: this.selectedModules }),
+      });
+      const scanInfo = await cr.json();
+      const scanId = scanInfo.scan_id;
+      this.activeScanId = scanId;
+
+      // Initialize module cards
+      this.moduleCards = this.selectedModules.map(m => ({
+        name: m, label: MODULE_META[m]?.label || m,
+        status: 'pending', count: 0, elapsed: null, last: '',
+      }));
+
+      // 2. Subscribe to SSE before kicking off
+      this._es = new EventSource(`/api/scan/${scanId}/events`);
+      this._es.onmessage = (e) => this.handleEvent(JSON.parse(e.data));
+      this._es.onerror = () => { this.busy = false; };
+
+      // 3. Start the run
+      await fetch(`/api/scan/${scanId}/run`, { method: 'POST' });
+      await this.loadScans();
+    },
+
+    handleEvent(ev) {
+      const t = ev.type;
+      const card = this.moduleCards.find(c => c.name === ev.module);
+
+      if (t === 'module_start' && card) {
+        card.status = 'running'; card.count = 0;
+      } else if (t === 'module_progress' && card) {
+        card.count = ev.count; card.elapsed = ev.elapsed;
+      } else if (t === 'module_done' && card) {
+        card.status = ev.error ? 'error' : 'done';
+        card.count = ev.count; card.elapsed = ev.elapsed;
+      } else if (t === 'module_skip' && card) {
+        card.status = 'skipped';
+      } else if ((t === 'subdomain' || t === 'js_finding' || t === 'port' || t === 'url') && card) {
+        card.count++;
+        card.last = this.previewFinding(ev);
+      } else if (t === 'scan_done' || t === 'done') {
+        this.busy = false;
+        if (this._es) { this._es.close(); this._es = null; }
+        this.loadScans();
+      } else if (t === 'scan_error') {
+        this.busy = false;
+        if (this._es) { this._es.close(); this._es = null; }
+        this.loadScans();
+      }
+    },
+
+    previewFinding(ev) {
+      if (ev.type === 'subdomain') return ev.host + (ev.is_live ? ' [live]' : '');
+      if (ev.type === 'js_finding') return (ev.secret_type || ev.finding_type) + ': ' + (ev.value || '').slice(0, 40);
+      if (ev.type === 'port') return `${ev.host}:${ev.port}/${ev.protocol}`;
+      if (ev.type === 'url') return (ev.url || '').slice(0, 60);
+      return '';
+    },
+
+    async deleteScan(id) {
+      if (!confirm(`Delete scan #${id}?`)) return;
+      await fetch(`/api/scan/${id}`, { method: 'DELETE' });
+      await this.loadScans();
+    },
+
+    fmtDate(s) {
+      if (!s) return '';
+      return new Date(s).toLocaleString();
+    },
+  };
+}
+</script>
+{% endblock %}
