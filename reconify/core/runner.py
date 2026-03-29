@@ -12,6 +12,15 @@ from reconify.modules.base import BaseModule
 # How often to emit a progress tick (every N findings within a module)
 _PROGRESS_EVERY = 5
 
+# Dependency-ordered execution stages. Modules within a stage are independent
+# and will run concurrently. Stages must complete before the next stage begins.
+MODULE_STAGES: list[set[str]] = [
+    {"sub"},
+    {"js", "ports", "content"},
+    {"params"},
+    {"xss", "ssrf"},
+]
+
 
 async def run_module(
     scan_id: int,
@@ -107,8 +116,7 @@ async def run_scan(
     emit({"type": "scan_start", "scan_id": scan_id, "target": target, "modules": modules})
 
     try:
-        for mod_name in modules:
-            await run_module(scan_id, mod_name, config, db_path, on_event=on_event, notifier=notifier)
+        await _run_stages(scan_id, target, modules, config, db_path, emit, notifier)
 
         # AI analysis after all modules
         if config.get("anthropic_api_key"):
@@ -175,8 +183,7 @@ async def run_scan_by_id(
     emit({"type": "scan_start", "scan_id": scan_id, "target": target, "modules": modules})
 
     try:
-        for mod_name in modules:
-            await run_module(scan_id, mod_name, config, db_path, on_event=on_event, notifier=notifier)
+        await _run_stages(scan_id, target, modules, config, db_path, emit, notifier)
 
         if config.get("anthropic_api_key"):
             storage.module_start(scan_id, "ai", db_path)
@@ -197,6 +204,44 @@ async def run_scan_by_id(
         emit({"type": "scan_error", "scan_id": scan_id, "error": str(exc)})
 
     return storage.get_scan_data(scan_id, db_path)
+
+
+async def _run_stages(
+    scan_id: int,
+    target: str,
+    modules: list[str],
+    config: dict,
+    db_path: str,
+    emit: Callable[[dict], None],
+    notifier,
+) -> None:
+    """
+    Run requested modules in parallel within each dependency stage.
+    Stages execute sequentially; modules within a stage run concurrently.
+    One module failing does not prevent sibling modules from completing.
+    """
+    requested = set(modules)
+    scheduled: set[str] = set()
+
+    for stage in MODULE_STAGES:
+        stage_modules = sorted(stage & requested)
+        if not stage_modules:
+            continue
+        scheduled.update(stage_modules)
+
+        results = await asyncio.gather(
+            *[run_module(scan_id, m, config, db_path, on_event=emit, notifier=notifier)
+              for m in stage_modules],
+            return_exceptions=True,
+        )
+        for mod_name, result in zip(stage_modules, results):
+            if isinstance(result, BaseException):
+                emit({"type": "module_error", "module": mod_name,
+                      "error": f"Unhandled exception: {result}"})
+
+    # Future-proof: run any modules not covered by MODULE_STAGES sequentially
+    for m in sorted(requested - scheduled):
+        await run_module(scan_id, m, config, db_path, on_event=emit, notifier=notifier)
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

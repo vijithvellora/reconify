@@ -37,6 +37,8 @@ def load_config(path: str | None = None) -> dict:
         cfg["anthropic_api_key"] = key
     if threads := os.getenv("RECONIFY_THREADS"):
         cfg["threads"] = int(threads)
+    if interactsh := os.getenv("RECONIFY_INTERACTSH_URL"):
+        cfg["interactsh_url"] = interactsh
 
     return cfg
 
