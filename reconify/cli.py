@@ -37,6 +37,11 @@ def scan(
     output: str = typer.Option("table", "--output", "-o", help="Output format: table|json"),
     config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
     no_ai: bool = typer.Option(False, "--no-ai", help="Skip AI analysis"),
+    interactsh_url: Optional[str] = typer.Option(
+        None,
+        "--interactsh-url",
+        help="Interactsh callback URL for blind SSRF detection (e.g. abc123.oast.pro)",
+    ),
 ):
     """Run recon against a target domain."""
     cfg = load_config(config_path)
@@ -50,6 +55,9 @@ def scan(
     if no_ai:
         cfg["anthropic_api_key"] = ""
 
+    if interactsh_url:
+        cfg["interactsh_url"] = interactsh_url
+
     ensure_output_dir(cfg)
     db_path = str(__import__("pathlib").Path(cfg["output_dir"]).parent / "reconify.db")
 
@@ -57,7 +65,8 @@ def scan(
         f"[bold cyan]Target:[/bold cyan] {target}\n"
         f"[bold cyan]Modules:[/bold cyan] {', '.join(mod_list)}\n"
         f"[bold cyan]Threads:[/bold cyan] {threads}\n"
-        f"[bold cyan]AI:[/bold cyan] {'enabled' if cfg.get('anthropic_api_key') else 'disabled (set ANTHROPIC_API_KEY)'}",
+        f"[bold cyan]AI:[/bold cyan] {'enabled' if cfg.get('anthropic_api_key') else 'disabled (set ANTHROPIC_API_KEY)'}\n"
+        f"[bold cyan]Interactsh:[/bold cyan] {cfg.get('interactsh_url') or 'not configured (blind SSRF disabled)'}",
         title="[bold green]Reconify[/bold green]",
     ))
 
