@@ -27,6 +27,13 @@ import httpx
 
 _BASE = "https://api.telegram.org/bot{token}/{method}"
 
+# Bypass any egress proxy for Telegram API calls (connect directly).
+# The mounts dict maps URL patterns to transports; None = no proxy.
+_NO_PROXY = {
+    "https://api.telegram.org": None,
+    "http://api.telegram.org": None,
+}
+
 
 class TelegramBot:
     def __init__(self, token: str, chat_id: str):
@@ -41,7 +48,7 @@ class TelegramBot:
     async def send(self, text: str, parse_mode: str = "HTML") -> bool:
         url = _BASE.format(token=self.token, method="sendMessage")
         try:
-            async with httpx.AsyncClient(timeout=10) as c:
+            async with httpx.AsyncClient(timeout=10, mounts=_NO_PROXY) as c:
                 r = await c.post(url, json={
                     "chat_id": self.chat_id,
                     "text": text[:4096],
@@ -99,7 +106,7 @@ class TelegramBot:
 
     async def _get_updates(self) -> list[dict]:
         url = _BASE.format(token=self.token, method="getUpdates")
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=30, mounts=_NO_PROXY) as c:
             r = await c.get(url, params={"offset": self._offset, "timeout": 25})
             return r.json().get("result", [])
 
